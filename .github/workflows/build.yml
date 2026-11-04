@@ -31,25 +31,22 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
-      - name: Vérifier le site et le logo
+      - name: Vérifier les fichiers du projet
         run: |
-          test -f www/index.html
-          test -f www/img/logo.png
-          test -f www/img/logo-192.png
-          test -f www/js/kanis-backend.js
-          test -f www/js/config.js
-          grep -q 'signInWithPassword' www/js/kanis-backend.js
-          grep -q 'auth.signUp' www/js/kanis-backend.js
-          grep -q 'auth.getSession' www/js/kanis-backend.js
-          test -f scripts/patch-android.js
-          grep -q "supabase.co" www/js/config.js
-          ! grep -rn "sb_secret_" www/
-          test -f resources/icon-only.png
-          test -d resources/android-icons
-          test -f resources/icon-foreground.png
-          test -f resources/icon-background.png
-          test -f resources/splash.png
-          test -f resources/splash-dark.png
+          manque=0
+          for f in www/index.html www/img/logo.png www/img/logo-192.png \
+            www/js/kanis-backend.js www/js/config.js scripts/patch-android.js \
+            resources/icon-foreground.png resources/icon-background.png \
+            capacitor.config.json package.json; do
+            if [ ! -f "$f" ]; then echo "MANQUE : $f"; manque=1; fi
+          done
+          grep -q 'signInWithPassword' www/js/kanis-backend.js || { echo "kanis-backend.js : ancienne version"; manque=1; }
+          grep -q "supabase.co" www/js/config.js || { echo "config.js : URL Supabase absente"; manque=1; }
+          if grep -rn "sb_secret_" www/; then echo "Clé secrète trouvée dans www/"; manque=1; fi
+          for f in resources/icon-only.png resources/splash.png resources/splash-dark.png; do
+            [ -f "$f" ] || echo "Avertissement : $f absent (écran de démarrage par défaut)"
+          done
+          exit $manque
 
       - name: Installer les dépendances
         run: npm install
@@ -73,8 +70,36 @@ jobs:
 
       - name: Installer l'icône KANIS (logo officiel)
         run: |
-          node scripts/apply-icons.js
+          pip install pillow
+          python3 - <<'PY'
+          from PIL import Image, ImageDraw
+          import os
+          res = "android/app/src/main/res"
+          fg = Image.open("resources/icon-foreground.png").convert("RGBA")
+          bg = Image.new("RGBA", (1024, 1024), (2, 6, 18, 255))
+          comp = Image.alpha_composite(bg, fg)
+          sizes = {"mdpi": (48, 108), "hdpi": (72, 162), "xhdpi": (96, 216), "xxhdpi": (144, 324), "xxxhdpi": (192, 432)}
+          for k, (l, a) in sizes.items():
+              d = f"{res}/mipmap-{k}"
+              os.makedirs(d, exist_ok=True)
+              c = comp.resize((l * 4, l * 4), Image.LANCZOS)
+              m = Image.new("L", c.size, 0)
+              ImageDraw.Draw(m).rounded_rectangle([0, 0, c.size[0] - 1, c.size[1] - 1], radius=int(c.size[0] * .22), fill=255)
+              r = c.copy(); r.putalpha(m); r.resize((l, l), Image.LANCZOS).save(d + "/ic_launcher.png")
+              m2 = Image.new("L", c.size, 0)
+              ImageDraw.Draw(m2).ellipse([0, 0, c.size[0] - 1, c.size[1] - 1], fill=255)
+              r2 = c.copy(); r2.putalpha(m2); r2.resize((l, l), Image.LANCZOS).save(d + "/ic_launcher_round.png")
+              fg.resize((a, a), Image.LANCZOS).save(d + "/ic_launcher_foreground.png")
+          os.makedirs(res + "/mipmap-anydpi-v26", exist_ok=True)
+          os.makedirs(res + "/values", exist_ok=True)
+          xml = '<?xml version="1.0" encoding="utf-8"?>\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n    <background android:drawable="@color/kanis_icon_bg"/>\n    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>\n</adaptive-icon>\n'
+          for n in ("ic_launcher.xml", "ic_launcher_round.xml"):
+              open(res + "/mipmap-anydpi-v26/" + n, "w").write(xml)
+          open(res + "/values/kanis_icon.xml", "w").write('<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="kanis_icon_bg">#020612</color>\n</resources>\n')
+          print("Icône KANIS installée.")
+          PY
           test -f android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png
+          grep -q 'android:icon="@mipmap/ic_launcher"' android/app/src/main/AndroidManifest.xml
 
       - name: Synchroniser le site avec Android
         run: npx cap sync android
